@@ -447,7 +447,7 @@ Java_com_example_nativelib_DecodeTool_startVideoPlay(JNIEnv *env, jobject thiz, 
     //每帧间隔
     double delayTime = 0.0;
 
-    FILE *cFile = nullptr;
+//    FILE *cFile = nullptr;
 
     //IO输入/输出上下文
     AVIOContext *avio_ctx = nullptr;
@@ -509,15 +509,15 @@ Java_com_example_nativelib_DecodeTool_startVideoPlay(JNIEnv *env, jobject thiz, 
         LOGE("startVideoPlay> avio_alloc_context fail %s", av_err2str(ret));
         goto end;
     }
-//    ctx->pb = avio_ctx;
+    ctx->pb = avio_ctx;
 
     //打开文件
-//    ret = avformat_open_input(&ctx, nullptr, nullptr, &option);
-    cFile = fopen(cPath, "rb");
-    if (!cFile) {
-        LOGE("startVideoPlay> Cannot open input file ");
-    }
-    ret = avformat_open_input(&ctx, cPath, nullptr, &option);
+    ret = avformat_open_input(&ctx, nullptr, nullptr, &option);
+//    cFile = fopen(cPath, "rb");
+//    if (!cFile) {
+//        LOGE("startVideoPlay> Cannot open input file ");
+//    }
+//    ret = avformat_open_input(&ctx, cPath, nullptr, &option);
     if (ret != 0) {
         LOGE("startVideoPlay> Open input fail %s", av_err2str(ret));
         goto end;
@@ -547,8 +547,6 @@ Java_com_example_nativelib_DecodeTool_startVideoPlay(JNIEnv *env, jobject thiz, 
 
     //因为YUV数据被封装在了AVPacket中，因此我们需要用AVPacket去获取数据
     pkt = av_packet_alloc();
-//    pkt->data = nullptr;
-//    pkt->size = 0;
     //创建一个frame去接收解码后的数据
     frame = av_frame_alloc();
 
@@ -645,11 +643,11 @@ Java_com_example_nativelib_DecodeTool_startVideoPlay(JNIEnv *env, jobject thiz, 
     end:
     env->ReleaseStringUTFChars(path, cPath);
     avformat_free_context(ctx);
+    avcodec_free_context(&codecContext);
+
     av_file_unmap(buffer, buffer_size);
     av_dict_free(&option);
-    if (info) {
-        delete info;
-    }
+    delete info;
     if (frame) {
         av_frame_free(&frame);
     }
@@ -683,7 +681,7 @@ static SLEngineItf engineEngine;
 // 输出混合器
 static SLObjectItf outputMixObj = nullptr;
 
-// buffer queue player interfaces
+// 播放对象及接口
 static SLObjectItf playerObj = nullptr;
 static SLPlayItf playerPlayItf;
 // 音频输出的buffer queue 接口
@@ -843,19 +841,16 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
     AVPacket *pkt = nullptr;
     //存储一帧原始数据的结构，未编码的如YUV、RGB、PCM
     AVFrame *frame = nullptr;
+    //重采样上下文
     SwrContext *swrContext = nullptr;
+    //输出渠道布局
     AVChannelLayout outputChannel;
-    int dataSize = 0;
+    //存放重采样后的数据缓冲区
     uint8_t *audioBuffer = nullptr;
-
-
+    //重采样后的数据大小
+    int dataSize = 0;
 
     FILE *pFile = nullptr;
-    //IO输入/输出上下文
-    AVIOContext *avio_ctx = nullptr;
-    uint8_t *buffer = nullptr, *avio_ctx_buffer = nullptr;
-    size_t buffer_size, avio_ctx_buffer_size = 4096;
-    struct buffer_data bd = {0};
 
     //java string 转 C++能用的字符串
     const char *cPath = env->GetStringUTFChars(path, JNI_FALSE);
@@ -864,26 +859,12 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
     //当前读取到的数据量
     double curr_size = 0;
 
+    //进度回调
     jclass callbackClass = env->FindClass("com/example/nativelib/DecodeTool$ProgressCallback");
     jmethodID call_invoke = env->GetMethodID(callbackClass, "invoke", "(I)V");
 
     //初始化网络模块，可以播放url
 //    avformat_network_init();
-
-    //配置超时时间？
-    AVDictionary *option = nullptr;
-    av_dict_set(&option, "timeout", "3000000", 0);
-
-    //读取指定的文件，并将内容放入新分配的缓冲区，或者mmap()映射的物理地址
-    ret = av_file_map(cPath, &buffer, &buffer_size, 0, nullptr);
-    if (ret < 0) {
-        LOGE("startPlayAudio> av_file_map fail %s", av_err2str(ret));
-        goto end;
-    }
-
-    /* fill opaque structure used by the AVIOContext read callback */
-    bd.ptr = buffer;
-    bd.size = buffer_size;
 
     if (!(ctx = avformat_alloc_context())) {
         ret = AVERROR(ENOMEM);
@@ -891,53 +872,39 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
         goto end;
     }
 
-    avio_ctx_buffer = static_cast<uint8_t *>(av_malloc(avio_ctx_buffer_size));
-    if (!avio_ctx_buffer) {
-        ret = AVERROR(ENOMEM);
-        LOGE("startPlayAudio> av_malloc fail %s", av_err2str(ret));
-        goto end;
-    }
-
-    // 自定义pb
+    //
     pFile = fopen(cPath, "rb");
     if (!pFile) {
         LOGE("startPlayAudio> Cannot open input file ");
     }
-    
-    avio_ctx = avio_alloc_context(avio_ctx_buffer, avio_ctx_buffer_size,
-                                  0, &bd, &read_packet, nullptr, nullptr);
-    if (!avio_ctx) {
-        ret = AVERROR(ENOMEM);
-        LOGE("startPlayAudio> avio_alloc_context fail %s", av_err2str(ret));
-        goto end;
-    }
 
     //打开文件
-    ret = avformat_open_input(&ctx, cPath, nullptr, &option);
-//    ret = avformat_open_input(&ctx, nullptr, nullptr, &option);
+    ret = avformat_open_input(&ctx, cPath, nullptr, nullptr);
     if (ret != 0) {
         LOGE("startPlayAudio> Open input fail %s", av_err2str(ret));
         goto end;
     }
 
-    //找到对应的流数据
+    //获取编码流信息
     ret = avformat_find_stream_info(ctx, nullptr);
     if (ret != 0) {
         LOGE("startPlayAudio> Find stream info fail %s", av_err2str(ret));
         goto end;
     }
-
+    //无需遍历，直接查找指定类型的流索引，并填充解码器
     ret = av_find_best_stream(ctx, AVMEDIA_TYPE_AUDIO, -1, -1, &avCodec, 0);
     if (ret < 0) {
         LOGE("startPlayAudio> av_find_best_stream AVMEDIA_TYPE_AUDIO fail %s", av_err2str(ret));
         goto end;
     }
     audio_steam_index = ret;
-
-    codecContext = avcodec_alloc_context3(avCodec);
+    //获取解码器参数
     params = ctx->streams[audio_steam_index]->codecpar;
+    //生成解码器上下文
+    codecContext = avcodec_alloc_context3(avCodec);
+    //将解码器参数填充到解码器上下文
     avcodec_parameters_to_context(codecContext, params);
-
+    //打开解码器
     ret = avcodec_open2(codecContext, avCodec, nullptr);
     if (ret < 0) {
         LOGE("startPlayAudio> avcodec_open2 fail %s", av_err2str(ret));
@@ -945,19 +912,20 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
     }
 
     LOGI("startPlayAudio> before init swrContext");
-    //重采样
 
-    // 设置参数
+    //创建一个渠道布局，然后填充渠道数量
     outputChannel = AVChannelLayout();
     av_channel_layout_default(&outputChannel, out_channels_count);
+    // 设置参数
     ret = swr_alloc_set_opts2(&swrContext,
-                              &outputChannel,
-                              AV_SAMPLE_FMT_S16,
-                              out_sample_rate,
-                              &(params->ch_layout),
-                              codecContext->sample_fmt,
-                              params->sample_rate,
+                              &outputChannel,              //输出源的渠道布局
+                              AV_SAMPLE_FMT_S16,         //输出源的音频采样格式
+                              out_sample_rate,                        //输出源的音频采样率
+                              &(params->ch_layout),        //数据源的渠道布局
+                              codecContext->sample_fmt,  //数据源的音频采样格式
+                              params->sample_rate,       //数据源的音频采样率
                               0, nullptr);
+    //初始化重采样上下文
     ret = swr_init(swrContext);
 
     if (ret < 0) {
@@ -965,7 +933,7 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
         goto end;
     }
 
-    /* 分配空间 */
+    /* 为采样输出的数据缓冲区分配空间 */
     audioBuffer = (uint8_t*)calloc(codecContext->ch_layout.nb_channels,
                                      sizeof(*audioBuffer));
     av_samples_alloc(&audioBuffer, nullptr,
@@ -1050,6 +1018,7 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
     }
 
     end:
+    env->ReleaseStringUTFChars(path,cPath);
     avformat_free_context(ctx);
     avcodec_free_context(&codecContext);
     swr_free(&swrContext);
