@@ -847,8 +847,7 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
     AVChannelLayout outputChannel;
     int dataSize = 0;
     uint8_t *audioBuffer = nullptr;
-    //每帧间隔
-    double delayTime = 0.0;
+
 
 
     FILE *pFile = nullptr;
@@ -912,8 +911,6 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
         LOGE("startPlayAudio> avio_alloc_context fail %s", av_err2str(ret));
         goto end;
     }
-//    ctx->pb = avio_ctx;
-//    ctx->flags |= AVFMT_FLAG_CUSTOM_IO;
 
     //打开文件
     ret = avformat_open_input(&ctx, cPath, nullptr, &option);
@@ -936,9 +933,6 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
         goto end;
     }
     audio_steam_index = ret;
-
-    delayTime = getDelayTime(ctx, audio_steam_index);
-    LOGI("startVideoPlay>getDelayTime %f", delayTime);
 
     codecContext = avcodec_alloc_context3(avCodec);
     params = ctx->streams[audio_steam_index]->codecpar;
@@ -997,6 +991,11 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
     }
     isRunning = true;
     while ((ret = av_read_frame(ctx, pkt)) >= 0 && isRunning) {
+        curr_size += pkt->size;
+        long progress = curr_size / size;
+        LOGI("startVideoPlay> file_size=%ld, curr=%f, progress = %ld", size, curr_size,
+             progress);
+        env->CallVoidMethod(callback, call_invoke, static_cast<jint>(curr_size / size * 100));
         if (pkt->stream_index == audio_steam_index) {
             ret = avcodec_send_packet(codecContext, pkt);
             if (ret < 0) {
@@ -1060,14 +1059,14 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
         free(audioBuffer);
     }
     //释放资源
-    if (engineObj) {
-        (*engineObj)->Destroy(engineObj);
-    }
     if (playerObj) {
         (*playerObj)->Destroy(playerObj);
     }
     if (outputMixObj) {
         (*outputMixObj)->Destroy(outputMixObj);
+    }
+    if (engineObj) {
+        (*engineObj)->Destroy(engineObj);
     }
 
     return result;
