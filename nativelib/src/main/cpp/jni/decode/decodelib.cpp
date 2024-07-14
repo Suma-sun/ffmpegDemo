@@ -686,32 +686,36 @@ static SLObjectItf playerObj = nullptr;
 static SLPlayItf playerPlayItf;
 // 音频输出的buffer queue 接口
 static SLAndroidSimpleBufferQueueItf playBufferQueueInterface;
-
-const int out_channels_count = 2; // 输出声道数，可以根据需要更改
-const int out_sample_rate = 48000; // 输出采样率，可以根据需要更改
-const int out_sample_size = out_channels_count * 1024; // 输出采样大小，可以根据需要更改
+// 输出声道数，可以根据需要更改
+const int out_channels_count = 2;
+// 输出采样率，可以根据需要更改
+const int out_sample_rate = 44100;
+// 输出采样大小，可以根据需要更改
+const int out_sample_size = out_channels_count * out_sample_rate;
+//播放间隔，*1000000是因为计算出来的是秒，需要转成微秒
+const double audio_sleep_us =  (1.0f/out_sample_rate)*1024 * 1000000;
 
 /**
  * 创建OpenSLES
  * @return
  */
 int createEngine() {
-    //创建audioEngine
+    //线程安全
     const SLEngineOption engineOptions[1] = {{(SLuint32) SL_ENGINEOPTION_THREADSAFE, (SLuint32) SL_BOOLEAN_TRUE}};
-    //第四个参数0表示忽略第五第六个参数
+    //创建audioEngine，第四个参数0表示忽略第五第六个参数
     SLresult sLResult = slCreateEngine(&engineObj, 1,
                                        engineOptions, 0, nullptr, nullptr);
     if (sLResult != SL_RESULT_SUCCESS) {
         LOGE("createEngine> slCreateEngine fail result%d", sLResult);
         return -1;
     }
-    //初始化刚才拿到的audioEngine，第二个参数false代表非异步
+    //初始化刚才拿到的engineObj，第二个参数false代表非异步
     sLResult = (*engineObj)->Realize(engineObj, SL_BOOLEAN_FALSE);
     if (sLResult != SL_RESULT_SUCCESS) {
         LOGE("createEngine> Realize fail result%d", sLResult);
         return -1;
     }
-    //获取接口对象，第二个参数是接口的ID
+    //获取接口对象，第二个参数是接口的ID，第三个参数是接口对象的地址用于存放获取的接口对象
     sLResult = (*engineObj)->GetInterface(engineObj, SL_IID_ENGINE, &engineEngine);
     if (sLResult != SL_RESULT_SUCCESS) {
         LOGE("createEngine> GetInterface fail result%d", sLResult);
@@ -728,13 +732,13 @@ int createOutputInterface() {
     // 相关参数
     const SLInterfaceID ids[1] = {SL_IID_ENVIRONMENTALREVERB};//环境混合音响的id
     const SLboolean req[1] = {SL_BOOLEAN_TRUE};
-    // 创建音频输出
+    // 创建音频输出混合器，第三个参数代表支持的接口数量，对应ids中的个数，该参数为0则忽略后面的参数
     SLresult sLResult = (*engineEngine)->CreateOutputMix(engineEngine, &outputMixObj, 1, ids, req);
     if (sLResult != SL_RESULT_SUCCESS) {
         LOGE("createOutputInterface> CreateOutputMix fail result%d", sLResult);
         return -1;
     }
-    // 初始化
+    // 初始化混合器
     sLResult = (*outputMixObj)->Realize(outputMixObj, SL_BOOLEAN_FALSE);
     if (sLResult != SL_RESULT_SUCCESS) {
         LOGE("createOutputInterface> Realize fail result%d", sLResult);
@@ -752,7 +756,7 @@ int createAudioPlay() {
     SLDataFormat_PCM pcm = {
             SL_DATAFORMAT_PCM, // 格式类型
             (SLuint32) out_channels_count,//通道数
-            SL_SAMPLINGRATE_48,// 采样率
+            SL_SAMPLINGRATE_44_1,// 采样率
             SL_PCMSAMPLEFORMAT_FIXED_16,// 位宽
             SL_PCMSAMPLEFORMAT_FIXED_16,
             out_channels_count > 1 ? SL_SPEAKER_FRONT_LEFT | SL_SPEAKER_FRONT_RIGHT
@@ -934,12 +938,14 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
     }
 
     /* 为采样输出的数据缓冲区分配空间 */
-    audioBuffer = (uint8_t*)calloc(codecContext->ch_layout.nb_channels,
-                                     sizeof(*audioBuffer));
-    av_samples_alloc(&audioBuffer, nullptr,
-                     codecContext->ch_layout.nb_channels,
-                     codecContext->frame_size,
-                     codecContext->sample_fmt, 0);
+//    audioBuffer = (uint8_t*)calloc(codecContext->ch_layout.nb_channels,
+//                                     sizeof(*audioBuffer));
+//    av_samples_alloc(&audioBuffer, nullptr,
+//                     codecContext->ch_layout.nb_channels,
+//                     codecContext->frame_size,
+//                     codecContext->sample_fmt, 0);
+    // 设置音频缓冲区间 16bit   48000  PCM数据, 双声道
+    audioBuffer = (uint8_t *) av_malloc(out_sample_size);
 
     //初始化解析的原始包和解码包
     pkt = av_packet_alloc();
@@ -988,10 +994,8 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
             if (ret < 0) {
                 LOGE("startPlayAudio> swr_convert fail %s", av_err2str(ret));
             }
-            LOGI("startPlayAudio> swr_convert end");
             dataSize = av_samples_get_buffer_size(nullptr, out_channels_count, frame->nb_samples,AV_SAMPLE_FMT_S16, 1);
             LOGI("startPlayAudio> av_samples_get_buffer_size dataSize = %d", dataSize);
-//            AudioPlayerCallback(playBufferQueueInterface, AudioContext(audioBuffer,dataSize));
 
             // 将音频数据添加到OpenSL ES播放器的缓冲区队列
             SLresult slResult = (*playBufferQueueInterface)->Enqueue(playBufferQueueInterface, audioBuffer, dataSize);
@@ -1004,7 +1008,8 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
 
             //计算公式 acc  1024 * 1000 / 48000 = 21.34
             //计算公式 mp3  1152 * 1000 / 48000 = 24
-            usleep(1000 * 21.34);
+//            usleep(1000 * 21.34);
+            usleep(static_cast<int>(audio_sleep_us));
 
         } else {
             LOGI("startPlayAudio> av_read_frame filter by stream_index != audio_stream_index");
