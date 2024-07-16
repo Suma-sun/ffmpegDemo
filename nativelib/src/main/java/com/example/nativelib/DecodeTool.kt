@@ -18,7 +18,7 @@ object DecodeTool {
         fun invoke(progress:Int)
     }
 
-    external fun decodeMP4ToImage2(inputFilePath:String, path: String)
+    external fun decodeMP4ToImage(inputFilePath:String, path: String)
 
     /**
      * 播放指定文件的视频

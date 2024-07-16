@@ -1,8 +1,5 @@
 package com.example.ffmpegdemo
 
-import ando.file.core.FileMimeType
-import ando.file.core.FileOpener
-import ando.file.core.FileUri
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
@@ -23,8 +20,6 @@ import com.example.nativelib.DecodeTool
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.io.File
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 
 
 /**
@@ -69,7 +64,7 @@ class SecondFragment : Fragment() {
         }
         binding.btnSelect.setOnClickListener {
             lifecycleScope.launch(Dispatchers.IO) {
-                DecodeTool.decodeMP4ToImage2(copyFile.path,outputFile.path)
+                DecodeTool.decodeMP4ToImage(copyFile.path,outputFile.path)
             }
         }
         binding.btnOpenFold.setOnClickListener {

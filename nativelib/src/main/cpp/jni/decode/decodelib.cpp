@@ -49,8 +49,7 @@ struct AVCodeIDInfo {
     //音频格式索引
     int audio_steam_index = -1;
 
-    AVCodeIDInfo() {
-    }
+    AVCodeIDInfo() = default;
 };
 
 bool isRunning = false;
@@ -219,7 +218,7 @@ void saveFrameToJpg(AVFrame *frame, const char *path) {
     //确保缓冲区长度大于图片,使用brga像素格式计算。如果是bmp或tiff依然可能超出长度，需要加一个头部长度，或直接乘以2。
     int bufSize = av_image_get_buffer_size(AV_PIX_FMT_BGRA, frame->width, frame->height, 64);
     //申请缓冲区
-    uint8_t *buf = (uint8_t *) av_malloc(bufSize);
+    auto *buf = (uint8_t *) av_malloc(bufSize);
     //将视频帧转换成jpg图片，如果需要png则使用AV_CODEC_ID_PNG
     int picSize = frameToImage(frame, AV_CODEC_ID_MJPEG, buf, bufSize);
     //写入文件
@@ -239,7 +238,7 @@ struct buffer_data {
 };
 
 int read_packet(void *opaque, uint8_t *buf, int buf_size) {
-    struct buffer_data *bd = (struct buffer_data *) opaque;
+    auto *bd = (struct buffer_data *) opaque;
     buf_size = FFMIN(buf_size, bd->size);
 
     if (!buf_size)
@@ -256,8 +255,8 @@ int read_packet(void *opaque, uint8_t *buf, int buf_size) {
 
 extern "C"
 JNIEXPORT void JNICALL
-Java_com_example_nativelib_DecodeTool_decodeMP4ToImage2(JNIEnv *env, jobject thiz,
-                                                        jstring inputFilePath, jstring path) {
+Java_com_example_nativelib_DecodeTool_decodeMP4ToImage(JNIEnv *env, jobject thiz,
+                                                       jstring inputFilePath, jstring path) {
     AVFormatContext *fmt_ctx = nullptr;
     AVIOContext *avio_ctx = nullptr;
     AVCodecContext *codec_ctx = nullptr;
@@ -267,14 +266,14 @@ Java_com_example_nativelib_DecodeTool_decodeMP4ToImage2(JNIEnv *env, jobject thi
     size_t buffer_size, avio_ctx_buffer_size = 4096;
     const char *input_filename = env->GetStringUTFChars(inputFilePath, nullptr);
     int ret;
-    struct buffer_data bd = {0};
+    struct buffer_data bd = {nullptr,0};
     AVCodeIDInfo *info = nullptr;
     int video_stream_index = -1;
 
     /* slurp file content into buffer */
     ret = av_file_map(input_filename, &buffer, &buffer_size, 0, nullptr);
     if (ret < 0) {
-        LOGE("av_file_map fail %s", av_err2str(ret));
+        LOGE("decodeMP4ToImage> av_file_map fail %s", av_err2str(ret));
         goto end;
     }
 
@@ -284,37 +283,39 @@ Java_com_example_nativelib_DecodeTool_decodeMP4ToImage2(JNIEnv *env, jobject thi
 
     if (!(fmt_ctx = avformat_alloc_context())) {
         ret = AVERROR(ENOMEM);
-        LOGE("avformat_alloc_context fail %s", av_err2str(ret));
+        LOGE("decodeMP4ToImage> avformat_alloc_context fail %s", av_err2str(ret));
         goto end;
     }
 
     avio_ctx_buffer = static_cast<uint8_t *>(av_malloc(avio_ctx_buffer_size));
     if (!avio_ctx_buffer) {
         ret = AVERROR(ENOMEM);
-        LOGE("av_malloc fail %s", av_err2str(ret));
+        LOGE("decodeMP4ToImage> av_malloc fail %s", av_err2str(ret));
         goto end;
     }
 
-    avio_ctx = avio_alloc_context(avio_ctx_buffer, avio_ctx_buffer_size,
+    avio_ctx = avio_alloc_context(avio_ctx_buffer, static_cast<int>(avio_ctx_buffer_size),
                                   0, &bd, &read_packet, nullptr, nullptr);
     if (!avio_ctx) {
         ret = AVERROR(ENOMEM);
-        LOGE("avio_alloc_context fail %s", av_err2str(ret));
+        LOGE("decodeMP4ToImage> avio_alloc_context fail %s", av_err2str(ret));
         goto end;
     }
     fmt_ctx->pb = avio_ctx;
 
     ret = avformat_open_input(&fmt_ctx, nullptr, nullptr, nullptr);
     if (ret < 0) {
-        LOGE("avio_alloc_context fail %s", av_err2str(ret));
+        LOGE("decodeMP4ToImage> avio_alloc_context fail %s", av_err2str(ret));
         goto end;
     }
 
     // 解码开始
 
     get_avCodeId(fmt_ctx, info);
+    LOGI("decodeMP4ToImage> get_avCodeId video_index=%d, audio_index=%d",
+         info->video_steam_index, info->audio_steam_index);
     if (info == nullptr || info->video_steam_index == -1) {
-        LOGE("Video Steam is NULL");
+        LOGE("decodeMP4ToImage> Video Steam is NULL");
         goto end;
     }
     video_stream_index = info->video_steam_index;
@@ -322,10 +323,10 @@ Java_com_example_nativelib_DecodeTool_decodeMP4ToImage2(JNIEnv *env, jobject thi
     codec_ctx = avcodec_alloc_context3(codec);
     avcodec_parameters_to_context(codec_ctx, fmt_ctx->streams[video_stream_index]->codecpar);
 
-    LOGI("Before open avcodec");
+    LOGI("decodeMP4ToImage> Before open avcodec");
     // 打开编解码器并分配解码器上下文
     if (avcodec_open2(codec_ctx, codec, nullptr) < 0) {
-        LOGE("Could not open codec.\n");
+        LOGE("decodeMP4ToImage> Could not open codec.\n");
         goto end;
     }
 
@@ -344,7 +345,7 @@ Java_com_example_nativelib_DecodeTool_decodeMP4ToImage2(JNIEnv *env, jobject thi
         if (packet->stream_index == video_stream_index) {
             int result = avcodec_send_packet(codec_ctx, packet);
             if (result < 0) {
-                LOGE("Error sending the packet\n");
+                LOGE("decodeMP4ToImage> Error sending the packet\n");
                 break;
             }
 
@@ -352,7 +353,7 @@ Java_com_example_nativelib_DecodeTool_decodeMP4ToImage2(JNIEnv *env, jobject thi
             if (result == AVERROR(EAGAIN) || result == AVERROR_EOF) {
                 break;
             } else if (result < 0) {
-                LOGE("Error during decoding\n");
+                LOGE("decodeMP4ToImage> Error during decoding\n");
                 break;
             }
 
@@ -374,15 +375,13 @@ Java_com_example_nativelib_DecodeTool_decodeMP4ToImage2(JNIEnv *env, jobject thi
     // 解码结束
 
     end:
-    if (info) {
-        delete info;
-    }
+    delete info;
     avformat_close_input(&fmt_ctx);
     avcodec_free_context(&codec_ctx);
     av_file_unmap(buffer, buffer_size);
-    /* note: the internal buffer could have changed, and be != avio_ctx_buffer */
-//    if (avio_ctx)
-//        av_freep(&avio_ctx->buffer);
+
+    if (avio_ctx)
+        av_freep(&avio_ctx->buffer);
 
     avio_context_free(&avio_ctx);
 
@@ -390,9 +389,9 @@ Java_com_example_nativelib_DecodeTool_decodeMP4ToImage2(JNIEnv *env, jobject thi
     env->ReleaseStringUTFChars(inputFilePath, input_filename);
 
     if (ret < 0) {
-        LOGE("Error occurred: %s", av_err2str(ret));
+        LOGE("decodeMP4ToImage> Error occurred: %s", av_err2str(ret));
     } else {
-        LOGI("Save success");
+        LOGI("decodeMP4ToImage> Save success");
     }
 }
 
@@ -453,7 +452,7 @@ Java_com_example_nativelib_DecodeTool_startVideoPlay(JNIEnv *env, jobject thiz, 
     AVIOContext *avio_ctx = nullptr;
     uint8_t *buffer = nullptr, *avio_ctx_buffer = nullptr;
     size_t buffer_size, avio_ctx_buffer_size = 4096;
-    struct buffer_data bd = {0};
+    struct buffer_data bd = {nullptr,0};
 
     //获取绘制用的Native view
     ANativeWindow *aNativeWindow = ANativeWindow_fromSurface(env, surface);
@@ -462,7 +461,7 @@ Java_com_example_nativelib_DecodeTool_startVideoPlay(JNIEnv *env, jobject thiz, 
     //java string 转 C++能用的字符串
     const char *cPath = env->GetStringUTFChars(path, JNI_FALSE);
     //文件大小
-    const long size = file_size;
+    const auto size = static_cast<double>(file_size);
     //当前读取到的数据量
     double curr_size = 0;
 
@@ -502,7 +501,7 @@ Java_com_example_nativelib_DecodeTool_startVideoPlay(JNIEnv *env, jobject thiz, 
         goto end;
     }
 
-    avio_ctx = avio_alloc_context(avio_ctx_buffer, avio_ctx_buffer_size,
+    avio_ctx = avio_alloc_context(avio_ctx_buffer, (int)avio_ctx_buffer_size,
                                   0, &bd, &read_packet, nullptr, nullptr);
     if (!avio_ctx) {
         ret = AVERROR(ENOMEM);
@@ -555,7 +554,7 @@ Java_com_example_nativelib_DecodeTool_startVideoPlay(JNIEnv *env, jobject thiz, 
                                 codecContext->pix_fmt,
                                 codecContext->width, codecContext->height,
                                 AV_PIX_FMT_RGBA, SWS_BILINEAR,
-                                0, 0, 0);
+                                nullptr, nullptr, nullptr);
     //设置ANativeWindow的绘制缓冲区
     ANativeWindow_setBuffersGeometry(aNativeWindow,
                                      codecContext->width, codecContext->height,
@@ -610,7 +609,7 @@ Java_com_example_nativelib_DecodeTool_startVideoPlay(JNIEnv *env, jobject thiz, 
 
             LOGI("startVideoPlay> before ANativeWindow_lock");
             //加锁等待绘制
-            ret = ANativeWindow_lock(aNativeWindow, &windowBuffer, 0);
+            ret = ANativeWindow_lock(aNativeWindow, &windowBuffer, nullptr);
             if (ret < 0) {
                 LOGE("startVideoPlay> ANativeWindow_lock fail %s,", av_err2str(ret));
             }
@@ -629,12 +628,12 @@ Java_com_example_nativelib_DecodeTool_startVideoPlay(JNIEnv *env, jobject thiz, 
 
             //解锁并绘制
             ANativeWindow_unlockAndPost(aNativeWindow);
-            long progress = curr_size / size;
-            LOGI("startVideoPlay> file_size=%ld, curr=%f, progress = %ld", size, curr_size,
+            double progress = curr_size / size;
+            LOGI("startVideoPlay> file_size=%f, curr=%f, progress = %f", size, curr_size,
                  progress);
-            env->CallVoidMethod(callback, call_invoke, static_cast<jint>(curr_size / size * 100));
+            env->CallVoidMethod(callback, call_invoke, static_cast<jint>(progress * 100));
             //休眠指定时间
-            usleep(delayTime);
+            usleep(static_cast<useconds_t>(delayTime));
         }
         av_packet_unref(pkt);
     }
@@ -702,7 +701,7 @@ int out_sample_size = 0;
  */
 double getAudioSleepUs(int sampleRate) {
     //播放间隔，*1000000是因为计算出来的是秒，需要转成微秒
-    return (1.0f/out_sample_rate)*1024 * 1000000;
+    return (1.0f/static_cast<float>(sampleRate))*1024 * 1000000;
 }
 
 /**
@@ -909,7 +908,7 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
     //java string 转 C++能用的字符串
     const char *cPath = env->GetStringUTFChars(path, JNI_FALSE);
     //文件大小
-    const long size = file_size;
+    const auto size = static_cast<double>(file_size);
     //当前读取到的数据量
     double curr_size = 0;
     //播放间隔时间
@@ -1029,11 +1028,11 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
     //开始循环读取每帧
     while ((ret = av_read_frame(ctx, pkt)) >= 0 && isRunning) {
         curr_size += pkt->size;
-        long progress = curr_size / size;
-        LOGI("startVideoPlay> file_size=%ld, curr=%f, progress = %ld", size, curr_size,
+        double progress = curr_size / size;
+        LOGI("startVideoPlay> file_size=%f, curr=%f, progress = %f", size, curr_size,
              progress);
         //回调给java层的进度，目前只是数据大小的进度，并不是实际播放时间来的
-        env->CallVoidMethod(callback, call_invoke, static_cast<jint>(curr_size / size * 100));
+        env->CallVoidMethod(callback, call_invoke, static_cast<jint>(progress * 100));
         //这里需要过滤非音频流数据，mp4是有音视频流
         if (pkt->stream_index == audio_steam_index) {
             //将这一帧数据填充到原始数据包结构体
