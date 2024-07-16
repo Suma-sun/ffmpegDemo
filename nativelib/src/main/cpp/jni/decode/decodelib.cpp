@@ -686,14 +686,24 @@ static SLObjectItf playerObj = nullptr;
 static SLPlayItf playerPlayItf;
 // 音频输出的buffer queue 接口
 static SLAndroidSimpleBufferQueueItf playBufferQueueInterface;
-// 输出声道数，可以根据需要更改
-const int out_channels_count = 2;
-// 输出采样率，可以根据需要更改
-const int out_sample_rate = 44100;
-// 输出采样大小，可以根据需要更改
-const int out_sample_size = out_channels_count * out_sample_rate;
-//播放间隔，*1000000是因为计算出来的是秒，需要转成微秒
-const double audio_sleep_us =  (1.0f/out_sample_rate)*1024 * 1000000;
+//最大输出声道数，根据设备修改
+const int max_out_channels_count = 2;
+// 输出声道数，根据输入更改
+int out_channels_count = 0;
+// 输出采样率，根据输入更改
+int out_sample_rate = 0;
+// 输出采样大小，根据输入更改
+int out_sample_size = 0;
+
+/**
+ * 获取音频播放间隔
+ * @param sampleRate
+ * @return
+ */
+double getAudioSleepUs(int sampleRate) {
+    //播放间隔，*1000000是因为计算出来的是秒，需要转成微秒
+    return (1.0f/out_sample_rate)*1024 * 1000000;
+}
 
 /**
  * 创建OpenSLES
@@ -748,7 +758,12 @@ int createOutputInterface() {
     return 0;
 }
 
-int createAudioPlay() {
+/**
+ * 创建播放器
+ * @param params 用于传递数据源的参数
+ * @return
+ */
+int createAudioPlay(AVCodecParameters * params) {
     //输入源为缓冲队列 buffer queue的参数
     SLDataLocator_AndroidSimpleBufferQueue android_queue = {SL_DATALOCATOR_ANDROIDSIMPLEBUFFERQUEUE,
                                                             1};
@@ -756,31 +771,34 @@ int createAudioPlay() {
     SLDataFormat_PCM pcm = {
             SL_DATAFORMAT_PCM, // 格式类型
             (SLuint32) out_channels_count,//通道数
-            SL_SAMPLINGRATE_44_1,// 采样率
-            SL_PCMSAMPLEFORMAT_FIXED_16,// 位宽
-            SL_PCMSAMPLEFORMAT_FIXED_16,
+            /*SL_SAMPLINGRATE_44_1*/(SLuint32)out_sample_rate * 1000,// 采样率,获取的值是44100，而常量里的是44100000所以还需要乘1000
+//            SL_PCMSAMPLEFORMAT_FIXED_16,// 位深
+//            SL_PCMSAMPLEFORMAT_FIXED_16,// 位深
+            (SLuint32)params->bits_per_coded_sample, //根据输入源的位深
+            (SLuint32)params->bits_per_coded_sample, //根据输入源的位深
             out_channels_count > 1 ? SL_SPEAKER_FRONT_LEFT | SL_SPEAKER_FRONT_RIGHT
                                     : SL_SPEAKER_FRONT_CENTER,// 通道屏蔽
             SL_BYTEORDER_LITTLEENDIAN // 字节顺序
     };
-    // 输入源
+    // 输入源，播放数据源为缓冲队列
     SLDataSource slDataSource = {&android_queue, &pcm};
 
     // 输出源
     SLDataLocator_OutputMix outputMix = {SL_DATALOCATOR_OUTPUTMIX, outputMixObj};
+    // 音频接收器，及用来播放的输出混合器
     SLDataSink slDataSink = {&outputMix, nullptr};
 
+    // 需要支持的接口
     const SLInterfaceID ids[1] = {SL_IID_BUFFERQUEUE};
     const SLboolean req[1] = {SL_BOOLEAN_TRUE};
-
+    //创建播放器，第五个参数代表支持的接口数量，对应ids中的个数，该参数为0则忽略后面的参数
     SLresult result = (*engineEngine)->CreateAudioPlayer(engineEngine, &playerObj, &slDataSource,
                                                          &slDataSink, 1, ids, req);
-    // todo CreateAudioPlayer 的numInterfaces 2 or 3?
     if (result != SL_RESULT_SUCCESS) {
         LOGE("createAudioPlay> CreateAudioPlayer fail. result=%d", result);
         return -1;
     }
-
+    //初始化播放器，第二个参数代表是否异步
     result = (*playerObj)->Realize(playerObj, SL_BOOLEAN_FALSE);
     if (result != SL_RESULT_SUCCESS) {
         LOGE("createAudioPlay>  Realize fail. result=%d", result);
@@ -799,14 +817,6 @@ int createAudioPlay() {
         return -1;
     }
 
-    // 注册输出回调 todo 不注册缓冲回调
-//    result = (*playBufferQueueInterface)->RegisterCallback(playBufferQueueInterface,
-//                                                           AudioPlayerCallback, nullptr);
-//    if (result != SL_RESULT_SUCCESS) {
-//        LOGE("createAudioPlay> RegisterCallback fail. result=%d", result);
-//        return -1;
-//    }
-
     //设置播放状态
     result = (*playerPlayItf)->SetPlayState(playerPlayItf, SL_PLAYSTATE_PLAYING);
     if (result != SL_RESULT_SUCCESS) {
@@ -814,6 +824,44 @@ int createAudioPlay() {
         return -1;
     }
     return 0;
+}
+
+
+/**
+ * 根据解码器参数获取采样格式
+ * @param codecpar
+ * @return
+ */
+AVSampleFormat get_sample_fmt(AVCodecContext *codecpar) {
+    if (!codecpar) return AV_SAMPLE_FMT_NONE;
+
+    int bit_depth = codecpar->bits_per_coded_sample;
+    if (bit_depth <= 0) return AV_SAMPLE_FMT_NONE; // Invalid bit depth
+
+    AVSampleFormat sample_fmt = AV_SAMPLE_FMT_NONE;
+    switch (codecpar->sample_fmt) {
+        case AV_SAMPLE_FMT_U8:
+            sample_fmt = AV_SAMPLE_FMT_U8;
+            break;
+        case AV_SAMPLE_FMT_S16:
+            sample_fmt = (bit_depth == 8) ? AV_SAMPLE_FMT_U8 : AV_SAMPLE_FMT_S16;
+            break;
+        case AV_SAMPLE_FMT_S32:
+            sample_fmt = (bit_depth == 16) ? AV_SAMPLE_FMT_S16 : AV_SAMPLE_FMT_S32;
+            break;
+        case AV_SAMPLE_FMT_FLT:
+            sample_fmt = (bit_depth == 32) ? AV_SAMPLE_FMT_S32 : AV_SAMPLE_FMT_FLT;
+            break;
+        case AV_SAMPLE_FMT_DBL:
+            sample_fmt = (bit_depth == 64) ? AV_SAMPLE_FMT_FLT : AV_SAMPLE_FMT_DBL;
+            break;
+        default:
+            // 其他浮点格式改用标准的16输出增加兼容性
+            sample_fmt = AV_SAMPLE_FMT_S16;
+            break;
+    }
+    LOGI("get_sample_fmt> sample_fmt=%d", sample_fmt);
+    return sample_fmt;
 }
 
 
@@ -838,7 +886,7 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
     //编解码器参数信息
     AVCodecParameters *params = nullptr;
     //编解码器
-    const AVCodec *avCodec;
+    const AVCodec *avCodec = nullptr;
     //编解码所需的上下文
     AVCodecContext *codecContext;
     //存储压缩编码数据的结构体
@@ -847,6 +895,8 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
     AVFrame *frame = nullptr;
     //重采样上下文
     SwrContext *swrContext = nullptr;
+    //网上资料一般都是使用AV_SAMPLE_FMT_S16作为重采样及播放器的音频采样格式，这是因为这个格式更通用兼容性更好，如果是母带那种高音质场景才需要改
+    AVSampleFormat outputFormat = AV_SAMPLE_FMT_S16;
     //输出渠道布局
     AVChannelLayout outputChannel;
     //存放重采样后的数据缓冲区
@@ -862,27 +912,30 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
     const long size = file_size;
     //当前读取到的数据量
     double curr_size = 0;
+    //播放间隔时间
+    int audio_sleep_us = 0;
 
     //进度回调
     jclass callbackClass = env->FindClass("com/example/nativelib/DecodeTool$ProgressCallback");
     jmethodID call_invoke = env->GetMethodID(callbackClass, "invoke", "(I)V");
 
     //初始化网络模块，可以播放url
-//    avformat_network_init();
+    //avformat_network_init();
 
+    // 获取ffmpeg上下文
     if (!(ctx = avformat_alloc_context())) {
         ret = AVERROR(ENOMEM);
         LOGE("startPlayAudio> avformat_alloc_context fail %s", av_err2str(ret));
         goto end;
     }
 
-    //
+    //打开文件
     pFile = fopen(cPath, "rb");
     if (!pFile) {
         LOGE("startPlayAudio> Cannot open input file ");
     }
 
-    //打开文件
+    //ffmpeg打开文件
     ret = avformat_open_input(&ctx, cPath, nullptr, nullptr);
     if (ret != 0) {
         LOGE("startPlayAudio> Open input fail %s", av_err2str(ret));
@@ -915,19 +968,35 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
         goto end;
     }
 
-    LOGI("startPlayAudio> before init swrContext");
+    //根据输入修改输出设置
+
+    //获取每秒的样本数大小
+    out_sample_rate = codecContext->sample_rate;
+    //不超过本地最大声道
+    if (max_out_channels_count >= codecContext->ch_layout.nb_channels) {
+        out_channels_count = codecContext->ch_layout.nb_channels;
+    }
+    // 音频缓冲区间大小
+    out_sample_size = out_channels_count * out_sample_rate;
+    //计算播放间隔
+    audio_sleep_us = static_cast<int>(getAudioSleepUs(out_sample_rate));
 
     //创建一个渠道布局，然后填充渠道数量
     outputChannel = AVChannelLayout();
     av_channel_layout_default(&outputChannel, out_channels_count);
+
+    LOGI("startPlayAudio> before init swrContext");
+    //为了贴合数据源，做了这样的处理
+    outputFormat = get_sample_fmt(codecContext);
     // 设置参数
     ret = swr_alloc_set_opts2(&swrContext,
-                              &outputChannel,              //输出源的渠道布局
-                              AV_SAMPLE_FMT_S16,         //输出源的音频采样格式
-                              out_sample_rate,                        //输出源的音频采样率
-                              &(params->ch_layout),        //数据源的渠道布局
-                              codecContext->sample_fmt,  //数据源的音频采样格式
-                              params->sample_rate,       //数据源的音频采样率
+                              &outputChannel,               //输出源的渠道布局
+//                              AV_SAMPLE_FMT_S16,                      //输出源的音频采样格式
+                              outputFormat,    //根据输入源设置输出源的音频采样格式
+                              out_sample_rate,                          //输出源的音频采样率
+                              &(params->ch_layout),          //数据源的渠道布局
+                              codecContext->sample_fmt,    //数据源的音频采样格式
+                              params->sample_rate,         //数据源的音频采样率
                               0, nullptr);
     //初始化重采样上下文
     ret = swr_init(swrContext);
@@ -938,13 +1007,6 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
     }
 
     /* 为采样输出的数据缓冲区分配空间 */
-//    audioBuffer = (uint8_t*)calloc(codecContext->ch_layout.nb_channels,
-//                                     sizeof(*audioBuffer));
-//    av_samples_alloc(&audioBuffer, nullptr,
-//                     codecContext->ch_layout.nb_channels,
-//                     codecContext->frame_size,
-//                     codecContext->sample_fmt, 0);
-    // 设置音频缓冲区间 16bit   48000  PCM数据, 双声道
     audioBuffer = (uint8_t *) av_malloc(out_sample_size);
 
     //初始化解析的原始包和解码包
@@ -960,22 +1022,27 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
         goto end;
     }
     //初始化播放
-    if (createAudioPlay() < 0) {
+    if (createAudioPlay(params) < 0) {
         goto end;
     }
     isRunning = true;
+    //开始循环读取每帧
     while ((ret = av_read_frame(ctx, pkt)) >= 0 && isRunning) {
         curr_size += pkt->size;
         long progress = curr_size / size;
         LOGI("startVideoPlay> file_size=%ld, curr=%f, progress = %ld", size, curr_size,
              progress);
+        //回调给java层的进度，目前只是数据大小的进度，并不是实际播放时间来的
         env->CallVoidMethod(callback, call_invoke, static_cast<jint>(curr_size / size * 100));
+        //这里需要过滤非音频流数据，mp4是有音视频流
         if (pkt->stream_index == audio_steam_index) {
+            //将这一帧数据填充到原始数据包结构体
             ret = avcodec_send_packet(codecContext, pkt);
             if (ret < 0) {
                 LOGE("startPlayAudio> avcodec_send_packet fail %s", av_err2str(ret));
                 goto end;
             }
+            //从解码器接收解码后的数据
             ret = avcodec_receive_frame(codecContext, frame);
             if (ret == AVERROR(EAGAIN)) {
                 LOGE("startPlayAudio> avcodec_receive_frame fail EAGAIN");
@@ -987,14 +1054,15 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
             }
 
             // 将音频帧数据转换为适合OpenSL ES播放器的格式
-
+            LOGI("startPlayAudio> before swr_convert");
             ret = swr_convert(swrContext, &audioBuffer, out_sample_size,
                         (const uint8_t **) frame->data,
                         frame->nb_samples);
             if (ret < 0) {
                 LOGE("startPlayAudio> swr_convert fail %s", av_err2str(ret));
             }
-            dataSize = av_samples_get_buffer_size(nullptr, out_channels_count, frame->nb_samples,AV_SAMPLE_FMT_S16, 1);
+            //计算音频数据长度
+            dataSize = av_samples_get_buffer_size(nullptr, out_channels_count, frame->nb_samples,outputFormat, 1);
             LOGI("startPlayAudio> av_samples_get_buffer_size dataSize = %d", dataSize);
 
             // 将音频数据添加到OpenSL ES播放器的缓冲区队列
@@ -1004,8 +1072,6 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
             }
             LOGI("startPlayAudio> Enqueue end");
 
-//            usleep(delayTime);
-
             //计算公式 acc  1024 * 1000 / 48000 = 21.34
             //计算公式 mp3  1152 * 1000 / 48000 = 24
 //            usleep(1000 * 21.34);
@@ -1014,15 +1080,18 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
         } else {
             LOGI("startPlayAudio> av_read_frame filter by stream_index != audio_stream_index");
         }
+        //擦除缓冲区
         av_packet_unref(pkt);
     }
     LOGI("startPlayAudio> end");
 
     if (playerPlayItf) {
+        //停止播放
         (*playerPlayItf)->SetPlayState(playerPlayItf, SL_PLAYSTATE_STOPPED);
     }
 
     end:
+    fclose(pFile);
     env->ReleaseStringUTFChars(path,cPath);
     avformat_free_context(ctx);
     avcodec_free_context(&codecContext);
@@ -1042,6 +1111,9 @@ Java_com_example_nativelib_DecodeTool_startPlayAudio(JNIEnv *env, jobject thiz, 
     if (engineObj) {
         (*engineObj)->Destroy(engineObj);
     }
+    out_channels_count = 0;
+    out_sample_rate = 0;
+    out_sample_size = 0;
 
     return result;
 }
