@@ -23,8 +23,8 @@
 <li> pacman -S diffutils </li>
 3.将根目录的build_ffmpeg拷贝到msys2目录中的home中的user_name目录下<p>
 4.将ffmpeg源码考到home中的user_name目录下，user_name目录下创建一个输出的文件夹<p>
-5.修改build_ffmpeg.sh文件中的对应路径名将user_name改为实际的user_name，将NDK目录改为实际的目录
-6.cd到user_name目录运行build_ffmpeg等待编译完成即可(如果失败根据提示配置工具到环境变量)
+5.修改build_ffmpeg.sh文件中的对应路径名将user_name改为实际的user_name，将NDK目录改为实际的目录<p>
+6.cd到user_name目录运行build_ffmpeg等待编译完成即可(如果失败根据提示配置工具到环境变量)<p>
 
 
 
